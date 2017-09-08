@@ -18,8 +18,8 @@ byte rState = 0; byte gState = 0; byte bState = 0; //To make server more respons
 ////POWER SENSOR
 const byte wPin PROGMEM = A0; //Power sensor input
 byte wallPower = 0; //Wall Power sensor value
-int outageTotal = 0; //Amount in seconds power was out for 1 days time.
-int outageSeq = 0; //Amount of time in seconds power was out consecutively. If power comes back on, this will reset to 0.
+long outageTotal = 0; //Amount in seconds power was out for 1 days time.
+long outageSeq = 0; //Amount of time in seconds power was out consecutively. If power comes back on, this will reset to 0.
 
 //BUTTON INPUT
 const byte iPin PROGMEM = 9; //Side input button
