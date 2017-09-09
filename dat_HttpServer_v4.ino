@@ -44,7 +44,7 @@ unsigned long cMillis = millis();
 unsigned long pMillis1 = 0; unsigned long interval1 = 1000; //Used in power outage routine
 unsigned long pMillis2 = 0; unsigned long interval2 = 10; //Surges Normal Blue LED to teal (Cosmetic)
 unsigned long pMillis3 = 0; unsigned long interval3 = 4000; //When to check temp/hum from DHT11 
-unsigned long pMillis4 = 0; unsigned long interval4 = 8000; //When to check public IP and update DNS
+unsigned long pMillis4 = 0; unsigned long interval4 = 6000; //When to check public IP and update DNS
 
 //GENERAL USAGE ARRAYS
 int httpCalls[] = {0,0,0,0}; //HTTP call successes and fail populate this array. Used in debug output.
@@ -141,7 +141,7 @@ void Call_Duckdns() {
         ether.copyIp(ether.hisip, dnsSiteIP);
       }
       if (lastPort == 65000) { ether.hisport = 80; lastPort = 80; }
-      sprintf(conkat,"update?domains=[DUCK DOMAIN]&token=[DUCK API TOKEN]&ip=%s", publicIP); //<--------------EDIT---------------------ME----------
+      sprintf(conkat,"update?domains=[DOMAIN]&token=[TOKEN]&ip=%s", publicIP);
       ether.browseUrl(PSTR("/"), conkat, dnsSite, Callback);
 }
 
@@ -164,22 +164,26 @@ void RGBLED(byte r, byte g, byte b) {
 // http200 alert ok temp dns button
 void ButtonHandler() {
     byte btnHold = 0;
-    RGBRESET();
     while (!digitalRead(iPin)) {
-      if (btnHold > 9) {
+      if (btnHold > 8) {
         //holding the button too long
         RGBRESET();
         for (byte i = 1; i < 5; i++) { digitalWrite(rPin, HIGH); delay(500); digitalWrite(rPin, LOW); delay(500); } return;
       } else {
         btnHold += 1;
-        if ((btnHold > 0) && (btnHold <= 3))      { digitalWrite(rPin, HIGH); digitalWrite(gPin, HIGH); }
-        else if ((btnHold > 3) && (btnHold <= 6)) { digitalWrite(gPin, LOW); digitalWrite(bPin, HIGH);  }
-        else if ((btnHold > 6) && (btnHold <= 9)) { digitalWrite(gPin, HIGH); }
+        if ((btnHold > 0) && (btnHold <= 2))      { RGBRESET(); digitalWrite(rPin, HIGH); digitalWrite(gPin, HIGH); digitalWrite(bPin, LOW);  }
+        else if ((btnHold > 2) && (btnHold <= 4)) { RGBRESET(); digitalWrite(rPin, HIGH); digitalWrite(gPin, LOW);  digitalWrite(bPin, HIGH);  }
+        else if ((btnHold > 4) && (btnHold <= 6)) { RGBRESET(); digitalWrite(rPin, LOW);  digitalWrite(gPin, HIGH); digitalWrite(bPin, HIGH);  }
+        else if ((btnHold > 6) && (btnHold <= 8)) { RGBRESET(); digitalWrite(rPin, HIGH); digitalWrite(gPin, HIGH); digitalWrite(bPin, HIGH); }
         delay(1000);
       }
     }
-    if ((btnHold > 0) && (btnHold <= 3)) {
+    if ((btnHold > 0) && (btnHold <= 2)) {
       //mode #1
+      if (debug) { debug = 0; } else { debug = 1; }
+    }
+    else if ((btnHold > 2) && (btnHold <= 4)) {
+      //mode #2
       if (!callToogle) {
         callCtrl = 1; callToogle = 1;
         Call_Myexternal();
@@ -188,16 +192,20 @@ void ButtonHandler() {
         Call_Duckdns();        
       }
     }
-    else if ((btnHold > 3) && (btnHold <= 6)) {
-      //mode #2
+    else if ((btnHold > 4) && (btnHold <= 6)) {
+      //mode #4
       digitalWrite(dhtPowerPin, LOW); delay(2000); digitalWrite(dhtPowerPin, HIGH); delay(2000); 
       GetTemps();
       rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
       DateAndTime();
     }
-    //mode #3
-    else if ((btnHold > 6) && (btnHold <= 9)) { wdt_enable(WDTO_15MS); for(;;) { /*do nothing until reset*/ }; }
-    else { RGBRESET(); for (byte i = 1; i < 5; i++) {  digitalWrite(rPin, HIGH); delay(500); digitalWrite(rPin, LOW); delay(500);  } return;}   
+    else if ((btnHold > 6) && (btnHold <= 8)) {
+      wdt_enable(WDTO_15MS); for(;;) { /*do nothing until reset*/ };
+    }
+    else {
+      RGBRESET();
+      for (byte i = 1; i < 5; i++) {  digitalWrite(rPin, HIGH); delay(500); digitalWrite(rPin, LOW); delay(500);  } return;
+    }   
 }
 
 
@@ -243,13 +251,16 @@ static word http_debug() {
   return bfill.position();
 }
 static word http_Info() {
+  //float is the lowest data type large enough to hold the amount of seconds in 1 day. outageSeq & outageTotal have to be converted to char work with ethercard. 
+  char outageS[8]; dtostrf(outageSeq, 7, 0, outageS);
+  char outageT[8]; dtostrf(outageTotal, 7, 0, outageT);
   bfill = ether.tcpOffset();
   bfill.emit_p(PSTR(
     "HTTP/1.0 200 OK\r\n"
     "Content-Type: text/html\r\n"
     "Retry-After: 600\r\n"
     "\r\n"
-    "$D/$D/$D^$D:$D:$D^$D^$D^$D^$D^$D"), rtcMonth, rtcDay, rtcYear, rtcHour, rtcMinute, rtcSecond, temp, hum, wallPower, outageSeq, outageTotal);
+    "$D/$D/$D^$D:$D:$D^$D^$D^$D^$S^$S"), rtcMonth, rtcDay, rtcYear, rtcHour, rtcMinute, rtcSecond, temp, hum, wallPower, outageS, outageT);
   return bfill.position();
 }
 static word http_NotFound() {
@@ -261,98 +272,155 @@ static word http_NotFound() {
 }
 /*_________________________________________________________________________________________________________*/
 void loop(){
+  cMillis = millis();
   word len = ether.packetReceive();
   word pos = ether.packetLoop(len);
   if (pos){
+    //ALL HTTP TASKS
     char *data = (char *) Ethernet::buffer + pos;
     String buff;
-    for (int x = 5; x<100; x++) {
-      if (isspace(data[x])) {
-        break;
-      } else {
-        buff += data[x];
-      }
+    for (byte x = 5; x<100; x++) {
+      //figure out url parameters
+      if (isspace(data[x])) { break; } else { buff += data[x]; }
     }
-    if (buff == "info"){
-      if (!debug) { DateAndTime(); ether.httpServerReply(http_Info()); } else { ether.httpServerReply(http_debug()); } RGBLED(1,1,1);
-    } else if (buff.substring(0,6) == "rtc/0/") {
-      newTime[0] = 0; newTime[1] = 0; newTime[2] = 0; newTime[3] = 0; newTime[4] = 0; newTime[5] = 0; index2 = 0;
-      buff = buff.substring(6);
-      for (byte i = 0; i < buff.length(); i++) {
-        if (buff[i] == 0x2D) { //hyphen
-          if      (newTime[0] == 0) { newTime[0] = buff.substring(0, i).toInt();        index2 = i;}
-          else if (newTime[1] == 0) { newTime[1] = buff.substring(index2+1, i).toInt(); index2 = i;} 
-          else if (newTime[2] == 0) { newTime[2] = buff.substring(index2+1, i).toInt(); index2 = i;} 
-          else if (newTime[3] == 0) { newTime[3] = buff.substring(index2+1, i).toInt(); index2 = i;} 
-          else if (newTime[4] == 0) { newTime[4] = buff.substring(index2+1, i).toInt(); newTime[5] = buff.substring(i+1).toInt();} else { break; }
-        }
-      }
-      index2 = 0;
-      if ((newTime[0] != 0) && (newTime[1] != 0) && (newTime[2] != 0)) {
-        rtc.adjust(DateTime(newTime[0], newTime[1], newTime[2], newTime[3], newTime[4], newTime[5])); //1/2/2017^3:4:13^75^19^1^0^0
-        callStatus = 1;
-      } else {
-        callStatus = 0;
-      }
-      ether.httpServerReply(http_function());
-      RGBLED(1,1,1);
-    } else if (buff.substring(0,5) == "rtc/1") {
-      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-      callStatus = 1;
-      ether.httpServerReply(http_function());
-      RGBLED(1,1,1);
-    } else if (buff == "dht") {
-      callStatus = 1;
-      ether.httpServerReply(http_function());
-      RGBLED(1,1,1);
-      digitalWrite(dhtPowerPin, LOW); delay(1000); digitalWrite(dhtPowerPin, HIGH); delay(2000);
-      GetTemps();
-    } else if (buff == "reset") {
-      callStatus = 1;
-      ether.httpServerReply(http_function());
-      RGBLED(1,1,1); delay(1000); RGBLED(1,0,0); delay(3000);
-      wdt_enable(WDTO_15MS); for(;;) { /*do nothing until reset*/ }
-    } else if (buff == "dns") {
-      ether.httpServerReply(http_Info());
-      RGBLED(1,1,1);
-      if (!callToogle) { callCtrl = 1; Call_Myexternal();
-        if (callStatus) { callToogle = 1; }
-      } else { callCtrl = 0; RGBLED(1,1,0); Call_Duckdns(); callToogle = 0; }
-    } else if (buff == "debug") {
-      if (debug) { debug = 0; } else { debug = 1; }
-      callStatus = 1;
-      ether.httpServerReply(http_function());
-      RGBLED(1,1,1);
-    } else {
-      callStatus = 0;
-      ether.httpServerReply(http_NotFound());
-      RGBLED(1,0,0);
-    }
-  } else {
-    if (!digitalRead(iPin)){
-      ButtonHandler();
-    } else {
-      wallPower = digitalRead(wPin);
-      if (! wallPower) {
-        if (cMillis - pMillis1 >= interval1) { //1 sec
-          outageTotal += 1;
-          outageSeq += 1;
-          pMillis1 = cMillis;
-          digitalWrite(rPin, HIGH); 
+    //get the command from buff and set a flag for the switch below (for organization?)
+    byte ctrl = 0;
+         if (buff == "info")                  { ctrl = 1; }
+    else if (buff.substring(0,6) == "rtc/0/") { ctrl = 2; }
+    else if (buff.substring(0,5) == "rtc/1")  { ctrl = 3; }
+    else if (buff == "dht")                   { ctrl = 4; }
+    else if (buff == "reset")                 { ctrl = 5; }
+    else if (buff == "debug")                 { ctrl = 6; }
+    else if (buff == "dns")                   { ctrl = 7; }
+
+    switch (ctrl) {
+      case 1:
+        //info
+        DateAndTime();
+        if (!debug) {
+          ether.httpServerReply(http_Info());
         } else {
-          RGBRESET();
+          ether.httpServerReply(http_debug());
         }
-      } else {
-        outageSeq = 0;
-        if(cMillis - pMillis2 >= interval2) { //LED ROUTINE
-          if ((rtcHour == 24) && (rtcMinute == 0) && (rtcSecond <= 30)) {
+        RGBLED(1,1,1); //RGBLED(r,g,b)
+        break;
+    
+      case 2:
+        //rtc/0/
+        newTime[0] = 0; newTime[1] = 0; newTime[2] = 0; newTime[3] = 0; newTime[4] = 0; newTime[5] = 0; index1 = 0;
+        buff = buff.substring(6);
+        for (byte i = 0; i < buff.length(); i++) {
+          if (buff[i] == 0x2D) { //hyphen
+            if      (newTime[0] == 0) { newTime[0] = buff.substring(0, i).toInt();        index2 = i;}
+            else if (newTime[1] == 0) { newTime[1] = buff.substring(index2+1, i).toInt(); index2 = i;} 
+            else if (newTime[2] == 0) { newTime[2] = buff.substring(index2+1, i).toInt(); index2 = i;} 
+            else if (newTime[3] == 0) { newTime[3] = buff.substring(index2+1, i).toInt(); index2 = i;} 
+            else if (newTime[4] == 0) { newTime[4] = buff.substring(index2+1, i).toInt(); newTime[5] = buff.substring(i+1).toInt();} else { break; }
+          }
+        }
+        index1 = 0;
+        if ((newTime[0] != 0) && (newTime[1] != 0) && (newTime[2] != 0)) {
+          rtc.adjust(DateTime(newTime[0], newTime[1], newTime[2], newTime[3], newTime[4], newTime[5]));
+          callStatus = 1;
+        } else {
+          callStatus = 0;
+        }
+        ether.httpServerReply(http_function());
+        RGBLED(1,1,1);
+        break;
+      case 3:
+        //rtc/1
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+        callStatus = 1;
+        ether.httpServerReply(http_function());
+        RGBLED(1,1,1);
+        break;
+      case 4:
+        //dht
+        callStatus = 1;
+        ether.httpServerReply(http_function());
+        RGBLED(1,1,1);
+        digitalWrite(dhtPowerPin, LOW);
+        delay(1000);
+        digitalWrite(dhtPowerPin, HIGH);
+        GetTemps();
+        break;
+      case 5:
+        //reset
+        callStatus = 1;
+        ether.httpServerReply(http_function());
+        RGBLED(1,1,1); delay(1000);
+        wdt_enable(WDTO_15MS); for(;;) { /*do nothing until reset*/ }
+        break;
+      case 6:
+        //debug
+        if (debug) { debug = 0; } else { debug = 1; }
+          callStatus = 1;
+          ether.httpServerReply(http_function());
+          RGBLED(1,1,1);
+      case 7:
+        //dns
+        ether.httpServerReply(http_function());
+        RGBLED(1,1,1);
+        callToogle = 0;
+        if (!callToogle){
+          Call_Myexternal();
+          callCtrl = 1;
+          if (callStatus) { callToogle = 1; }
+        } else {
+          callCtrl = 0;
+          RGBLED(1,1,0);
+          Call_Duckdns();
+          callToogle = 0;
+        }
+        break;
+      default:
+          callStatus = 0;
+          ether.httpServerReply(http_NotFound());
+          RGBLED(1,0,0);
+          break;
+    }
+    if (debug) {
+      Serial.print(F("HTTP - CASE: ")); Serial.print(ctrl); Serial.println();
+      Serial.print(F("HTTP - BUFF: ")); Serial.print(buff); Serial.println();
+      Serial.print(F("HTTP - TOGGLE: ")); Serial.print(callToogle); Serial.println();
+      Serial.print(F("HTTP - CALLSTATUS: ")); Serial.print(callStatus); Serial.println();
+    }
+
+  } else {
+    //NOT AN HTTP REQUEST SO CHECK BUTTON, THEN WALL POWER, AND THEN TIMERS
+    if (!digitalRead(iPin))  {
+      if (debug) { Serial.println(F("BUTTON HANDLER")); }
+      RGBRESET();
+      ButtonHandler();
+    } else if (!digitalRead(wPin)) {
+      RGBRESET();
+      if (cMillis - pMillis1 >= (interval1 - 250)) {
+        outageTotal += 1;
+        outageSeq += 1;
+        digitalWrite(rPin, HIGH);
+        pMillis1 = cMillis;
+        delay(250);  
+      }
+    } else {
+      byte ctrl = 0;
+           if (cMillis - pMillis2 >= interval2) { ctrl = 2; }
+      else if (cMillis - pMillis3 >= interval3) { ctrl = 3; }
+      else if (cMillis - pMillis4 >= interval4) { ctrl = 4; }
+
+      switch (ctrl) {
+        case 2:
+          if (debug) { Serial.println(F("TIMER #2 - LED")); }
+          if ((rtcHour == 24) && (rtcMinute == 0) && (rtcSecond <= 15)) {
             outageTotal = 0;
           } else {
             if (lastPort == 80) { ether.hisport = 65000;  lastPort = 65000; }
             RGBLED(0,0,1); RGBLED(0,1,1); RGBLED(0,0,1); interval2 = 15000;
           }
           pMillis2 = cMillis;
-        } else if (cMillis - pMillis3 >= interval3) { //GET TEMPS
+          break;
+        case 3:
+          if (debug) { Serial.println(F("TIMER #3 - DHT")); }
           RGBLED(1,0,1);
           GetTemps();
           if ((temp) && (hum)) {
@@ -360,8 +428,10 @@ void loop(){
           } else {
             interval3 = 60000; //900000;
           }
-          pMillis3 = cMillis;
-        } else if (cMillis - pMillis4 >= interval4) { //SET DNS
+          pMillis3 = cMillis;     
+          break;
+        case 4:
+          if (debug) { Serial.println(F("TIMER #4 - DNS")); }
           if (!callToogle) {
             callCtrl = 1; //tells to parse ip out
             Call_Myexternal();
@@ -379,17 +449,16 @@ void loop(){
               interval4 = (3600000 * 6); //6 hours
               callToogle = 0;
               if (lastPort == 80) { ether.hisport = 65000;  lastPort = 65000; }
-              RGBLED(0,1,0);
+              for (byte x = 0; x<5; x++) { RGBLED(0,1,0); RGBLED(1,1,0); }
             } else {
-              interval4 = 1800000; //30 mins
-              RGBLED(1,0,0);
+              interval4 = 900000; //15 mins
+              for (byte x = 0; x<5; x++) { RGBLED(1,0,0); RGBLED(1,1,0); }
             }
           }
-        pMillis4 = cMillis;
-        }
+          pMillis4 = cMillis;
+          break;
       }
     }
   }
-  delay(31); //If timers end in an even number... 
-  cMillis = millis();
+  delay(3); //If timers end in an even number... 
 }
